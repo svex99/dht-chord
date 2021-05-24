@@ -1,13 +1,15 @@
 import random
+
+from channel import ChannelClient
 from constChord import JOIN, LEAVE, LOOKUP_REP, LOOKUP_REQ, STOP
 
 
 class ChordNode:
 
-    def __init__(self, chan):
-        self.chan = chan                # Create ref to actual channel
-        self.nBits = chan.nBits         # Num of bits for the ID space
-        self.MAXPROC = chan.MAXPROC     # Maximum num of processes
+    def __init__(self, chan_ip, chan_port):
+        self.chan = ChannelClient(chan_ip, chan_port)   # Create ref to actual channel
+        self.nBits = self.chan.nBits                    # Num of bits for the ID space
+        self.MAXPROC = self.chan.MAXPROC                # Maximum num of processes
         # Find out who you are
         self.nodeID = int(self.chan.join('node'))
         # FT[0] is predecessor
@@ -66,7 +68,7 @@ class ChordNode:
     def run(self):
         self.chan.bind(self.nodeID)
         self.addNode(self.nodeID)
-        others = list(self.chan.channel.smembers(
+        others = list(self.chan.subgroup(
             'node') - set([str(self.nodeID)]))
         for i in others:
             self.addNode(i)
@@ -78,7 +80,8 @@ class ChordNode:
             sender = message[0]                 # Identify the sender
             request = message[1]                # And the actual request
 
-            if request[0] != LEAVE and self.chan.channel.sismember('node', str(sender)):
+            # if request[0] != LEAVE and self.chan.channel.sismember('node', str(sender)):
+            if request[0] != LEAVE and self.chan.exists('node', str(sender)):
                 self.addNode(sender)
             if request[0] == STOP:
                 break
@@ -99,13 +102,13 @@ class ChordNode:
 
 
 class ChordClient:
-    def __init__(self, chan):
-        self.chan = chan
+    def __init__(self, chan_ip, chan_port):
+        self.chan = ChannelClient(chan_ip, chan_port)
         self.nodeID = int(self.chan.join('client'))
 
     def run(self):
         self.chan.bind(self.nodeID)
-        procs = [int(i) for i in list(self.chan.channel.smembers('node'))]
+        procs = [int(i) for i in list(self.chan.subgroup('node'))]
         procs.sort()
         print(['%04d' % k for k in procs])
         p = procs[random.randint(0, len(procs)-1)]

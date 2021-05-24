@@ -1,5 +1,4 @@
 import logging
-import os
 import pickle
 import random
 
@@ -30,7 +29,7 @@ class Channel():
 
     def __init__(self, nBits=5, hostIP='redis', portNo=6379):
         self.channel = redis.Redis(host=hostIP, port=portNo, db=0)
-        self.osmembers = {}
+        self.members = {}
         self.nBits = nBits
         self.MAXPROC = pow(2, nBits)
 
@@ -70,18 +69,19 @@ class Channel():
         return self.channel.sismember('members', str(pid))
 
     @add(public_rpc)
-    def bind(self, pid):
-        ospid = os.getpid()
-        self.osmembers[ospid] = str(pid)
+    def bind(self, pid, _caller_id=None):
+        # ospid = os.getpid()
+        self.members[_caller_id] = str(pid)
         # print "Process "+str(ospid)+" ["+pid+"] joined "
         # print self.osmembers
 
-    # def subgroup(self, subgroup):
-    #     return list(self.channel.smembers(subgroup))
+    @add(public_rpc)
+    def subgroup(self, subgroup):
+        return list(self.channel.smembers(subgroup))
 
     @add(public_rpc)
-    def sendTo(self, destinationSet, message):
-        caller = self.osmembers[os.getpid()]
+    def sendTo(self, destinationSet, message, _caller_id=None):
+        caller = self.members[_caller_id]
         assert self.channel.sismember('members', str(caller)), ''
         for i in destinationSet:
             assert self.channel.sismember('members', str(i)), ''
@@ -94,8 +94,8 @@ class Channel():
     #         self.channel.rpush([str(caller), str(i)], pickle.dumps(message))
 
     @add(public_rpc)
-    def recvFromAny(self, timeout=0):
-        caller = self.osmembers[os.getpid()]
+    def recvFromAny(self, timeout=0, _caller_id=None):
+        caller = self.members[_caller_id]
         assert self.channel.sismember('members', str(caller)), ''
         members = self.channel.smembers('members')
         xchan = [[str(i), str(caller)] for i in members]
@@ -104,8 +104,8 @@ class Channel():
             return [msg[0].split("'")[1], pickle.loads(msg[1])]
 
     @add(public_rpc)
-    def recvFrom(self, senderSet, timeout=0):
-        caller = self.osmembers[os.getpid()]
+    def recvFrom(self, senderSet, timeout=0, _caller_id=None):
+        caller = self.members[_caller_id]
         assert self.channel.sismember('members', str(caller)), ''
         for i in senderSet:
             assert self.channel.sismember('members', str(i)), ''
@@ -113,6 +113,14 @@ class Channel():
         msg = self.channel.blpop(xchan, timeout)
         if msg:
             return [msg[0].split("'")[1], pickle.loads(msg[1])]
+
+    @add(public_rpc)
+    def nBits(self):
+        return self.nBits
+
+    @add(public_rpc)
+    def MAXPROC(self):
+        return self.MAXPROC
 
     def run(self):
         """
@@ -138,12 +146,13 @@ class Channel():
         self.sock.bind(f'tcp://*:{port}')
 
         while True:
-            _ = self.sock.recv()
+            client_id = self.sock.recv()
             data = self.sock.recv_json()
 
             name = data.get('name', '')
             args = data.get('args', [])
             kwargs = data.get('kwargs', {})
+            kwargs['_caller_id'] = client_id    # replace os.getpid()
 
             try:
                 # raise AttributeError if function is not defined
@@ -156,4 +165,59 @@ class Channel():
                 logging.error(f'Invoked invalid endpoint: \'{name}\'')
             else:
                 # invoke RPC function
-                func(*args, **kwargs)
+                result = func(*args, **kwargs)
+
+                self.sock.send(client_id, zmq.SNDMORE)
+                self.sock.send_json({'result': result})
+
+
+class ChannelClient:
+    """
+    Interface for communicate with Channel in a handy way.
+    """
+    def __init__(self, ip, port):
+        conn_string = f'tcp://{ip}:{port}'
+
+        self.sock = zmq.Context().socket(zmq.REQ)
+        self.sock.connect(conn_string)
+
+        logging.info(f'ChannelClient connected to {conn_string}')
+
+    def _invoke_rpc(self, name, args=[], kwargs={}):
+        self.sock.send_json(
+            {
+                'name': name,
+                'args': args,
+                'kwargs': kwargs,
+            }
+        )
+        return self.sock.recv_json().get('result', None)
+
+    def join(self, subgroup):
+        return self._invoke_rpc('join', [subgroup])
+
+    def exists(self, pid):
+        return self._invoke_rpc('exists', [pid])
+
+    def bind(self, pid):
+        return self._invoke_rpc('bind', [pid])
+
+    def subgroup(self, subgroup):
+        return self._invoke_rpc('subgroup', [subgroup])
+
+    def sendTo(self, destinationSet, message):
+        return self._invoke_rpc('sendTo', [destinationSet, message])
+
+    def recvFromAny(self, timeout=0):
+        return self._invoke_rpc('recvFromAny', [], {'timeout': timeout})
+
+    def recvFrom(self, senderSet, timeout=0):
+        return self._invoke_rpc('revFrom', [senderSet], {'timeout': timeout})
+
+    @property
+    def nBits(self):
+        return self._invoke_rpc('nBits')
+
+    @property
+    def MAXPROC(self):
+        return self._invoke_rpc('MAXPROC')
