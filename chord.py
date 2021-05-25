@@ -1,7 +1,14 @@
+import logging
 import random
 
 from channel import ChannelClient
 from constChord import JOIN, LEAVE, LOOKUP_REP, LOOKUP_REQ, STOP
+
+
+logging.basicConfig(
+    format='[%(levelname) 5s/%(asctime)s] %(name)s: %(message)s',
+    level=logging.INFO
+)
 
 
 class ChordNode:
@@ -11,7 +18,7 @@ class ChordNode:
         self.nBits = self.chan.nBits                    # Num of bits for the ID space
         self.MAXPROC = self.chan.MAXPROC                # Maximum num of processes
         # Find out who you are
-        self.nodeID = int(self.chan.join('node'))
+        self.nodeID = self.chan.join('node')
         # FT[0] is predecessor
         self.FT = [None for i in range(self.nBits+1)]
         self.nodeSet = []               # Nodes discovered so far
@@ -23,7 +30,7 @@ class ChordNode:
             return (lwb <= key and key < upb + self.MAXPROC) or (lwb <= key + self.MAXPROC and key < upb)
 
     def addNode(self, nodeID):
-        self.nodeSet.append(int(nodeID))
+        self.nodeSet.append(nodeID)
         self.nodeSet = list(set(self.nodeSet))
         self.nodeSet.sort()
 
@@ -68,57 +75,68 @@ class ChordNode:
     def run(self):
         self.chan.bind(self.nodeID)
         self.addNode(self.nodeID)
-        others = list(self.chan.subgroup(
-            'node') - set([str(self.nodeID)]))
+        others = list(set([other for other in self.chan.subgroup('node')]) - set([self.nodeID]))
+        logging.info(f'Other members: {others}')
+
         for i in others:
             self.addNode(i)
-            self.chan.sendTo([i], (JOIN))
+            self.chan.sendTo([i], (JOIN, ''))
+
         self.recomputeFingerTable()
 
         while True:
-            message = self.chan.recvFromAny()   # Wait for any request
-            sender = message[0]                 # Identify the sender
-            request = message[1]                # And the actual request
+            message = None
+            while message is None:
+                message = self.chan.recvFromAny(timeout=1)  # Wait for any request
 
-            # if request[0] != LEAVE and self.chan.channel.sismember('node', str(sender)):
-            if request[0] != LEAVE and self.chan.exists('node', str(sender)):
+            sender = message[0]                         # Identify the sender
+            request = message[1]                        # And the actual request
+
+            if request[0] != LEAVE and self.chan.exists('node', sender):
                 self.addNode(sender)
             if request[0] == STOP:
                 break
             if request[0] == LOOKUP_REQ:    # A lookup request
+                logging.info(f'Lookup request from {sender}: {request[1]}')
                 # look up next node
                 nextID = self.localSuccNode(request[1])
                 # return to sender
                 self.chan.sendTo([sender], (LOOKUP_REP, nextID))
-                if not self.chan.exists(nextID):
+                if not self.chan.exists('members', nextID):
                     self.delNode(nextID)
-            elif request[0] == JOIN:
                 continue
+            elif request[0] == JOIN:
+                logging.info(f'Join request from {sender}: {request[1]}')
             elif request[0] == LEAVE:
+                logging.info(f'Leave request from {sender}: {request[1]}')
                 self.delNode(sender)
+
             self.recomputeFingerTable()
-        print('FT[', '%04d' % self.nodeID, ']: ',
-              ['%04d' % k for k in self.FT])
+
+        logging.info(
+            'FT[' + '%04d' % self.nodeID + ']:' + str(['%04d' % k for k in self.FT]))
 
 
 class ChordClient:
     def __init__(self, chan_ip, chan_port):
         self.chan = ChannelClient(chan_ip, chan_port)
-        self.nodeID = int(self.chan.join('client'))
+        self.nodeID = self.chan.join('client')
 
     def run(self):
         self.chan.bind(self.nodeID)
-        procs = [int(i) for i in list(self.chan.subgroup('node'))]
+        procs = self.chan.subgroup('node')
         procs.sort()
-        print(['%04d' % k for k in procs])
+        logging.info(['%04d' % k for k in procs])
+
         p = procs[random.randint(0, len(procs)-1)]
         key = random.randint(0, self.chan.MAXPROC-1)
-        print(self.nodeID, "sending LOOKUP request for", key, "to", p)
+        logging.info(f'{self.nodeID} sending LOOKUP request for {key} to {p}')
+
         self.chan.sendTo([p], (LOOKUP_REQ, key))
         msg = self.chan.recvFrom([p])
         while msg[1][1] != p:
             p = msg[1][1]
             self.chan.sendTo([p], (LOOKUP_REQ, key))
             msg = self.chan.recvFrom([p])
-        print(self.nodeID, "received final answer from", p)
+        logging.info(f'{self.nodeID} received final answer from {p}')
         self.chan.sendTo(procs, (STOP))
