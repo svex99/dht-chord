@@ -1,0 +1,65 @@
+version: '3.3'
+
+services:
+  redis:
+    image: 'docker.uclv.cu/redis:alpine'
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+    ports:
+      - '6379:6379'
+    expose:
+      - 6379
+    container_name: chord_redis
+
+  channel:
+    image: xevs/chord   # xevs is my username in dockerhub
+    links: 
+      - redis
+    container_name: chord_channel
+    command: python src/run_server.py --nbits 5 --ip redis --port 6379 --numw 10
+  
+  node1:
+    image: xevs/chord
+    links:
+      - channel
+    container_name: node1
+    command: python src/run_node.py channel 1207
+  
+  node2:
+    image: xevs/chord
+    links:
+      - channel
+    container_name: node2
+    command: python src/run_node.py channel 1207
+  
+  node3:
+    image: xevs/chord
+    links:
+      - channel
+    container_name: node3
+    command: python src/run_node.py channel 1207
+
+  node4:
+    image: xevs/chord
+    links:
+      - channel
+    container_name: node4
+    command: python src/run_node.py channel 1207
+
+  node5:
+    image: xevs/chord
+    links:
+      - channel
+    container_name: node5
+    command: python src/run_node.py channel 1207
+
+  client:
+    image: xevs/chord
+    links:
+      - node1
+      - node2
+      - node3
+      - node4
+      - node5
+    container_name: chord_client
+    command: python src/run_client.py channel 1207
